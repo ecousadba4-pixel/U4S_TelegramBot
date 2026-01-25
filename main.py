@@ -15,6 +15,7 @@ from fastapi import FastAPI, Request, Response, status
 from loguru import logger
 from prometheus_fastapi_instrumentator import Instrumentator  # ✨ добавили
 from json import JSONDecodeError
+from urllib.parse import urlparse, urlunparse
 
 from config import get_settings
 
@@ -218,11 +219,14 @@ async def lifespan(app: FastAPI):
 
     if settings.webhook_url:
         try:
-            logger.info("Setting Telegram webhook to %s", settings.webhook_url)
-            await bot.set_webhook(str(settings.webhook_url))
+            webhook_url = ensure_webhook_url(str(settings.webhook_url))
+            logger.info("Setting Telegram webhook to %s", webhook_url)
+            await bot.set_webhook(webhook_url)
             logger.info("Webhook set")
         except Exception:
             logger.exception("Failed to set webhook (continuing without webhook)")
+    else:
+        logger.warning("WEBHOOK_URL is not set; bot will not receive updates.")
     yield
     logger.info("Shutting down: deleting webhook and closing pool")
     try:
@@ -234,6 +238,13 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 Instrumentator().instrument(app).expose(app, endpoint="/metrics")
+
+
+def ensure_webhook_url(url: str) -> str:
+    parsed = urlparse(url)
+    if parsed.path and parsed.path != "/":
+        return url
+    return urlunparse(parsed._replace(path="/webhook"))
 
 @dp.message(CommandStart())
 async def cmd_start(message: types.Message):
@@ -316,4 +327,3 @@ async def telegram_webhook(request: Request):
 @app.get("/")
 async def root():
     return {"status": "ok"}
-
