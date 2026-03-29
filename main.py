@@ -281,8 +281,19 @@ async def initialize_update_delivery(app: FastAPI) -> None:
 
 async def start_polling_mode(app: FastAPI, reason: str) -> None:
     logger.warning("Starting polling mode: {}", reason)
-    async with asyncio.timeout(UPDATE_DELIVERY_TIMEOUT_SECONDS):
-        await bot.delete_webhook(drop_pending_updates=False)
+    try:
+        async with asyncio.timeout(UPDATE_DELIVERY_TIMEOUT_SECONDS):
+            await bot.delete_webhook(drop_pending_updates=False)
+    except TimeoutError:
+        logger.error(
+            "Timed out while deleting webhook before polling startup; Telegram API is unreachable"
+        )
+        app.state.update_delivery_mode = "telegram_api_unreachable"
+        return
+    except Exception:
+        logger.exception("Failed to delete webhook before polling startup")
+        app.state.update_delivery_mode = "telegram_api_unreachable"
+        return
     polling_task = asyncio.create_task(
         dp.start_polling(bot, handle_signals=False),
         name="telegram-bot-polling",
