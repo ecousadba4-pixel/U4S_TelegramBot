@@ -254,7 +254,7 @@ def log_polling_task_result(task: asyncio.Task) -> None:
 
 
 async def start_polling_mode(app: FastAPI, reason: str) -> None:
-    logger.warning("Starting polling mode: %s", reason)
+    logger.warning("Starting polling mode: {}", reason)
     await bot.delete_webhook(drop_pending_updates=False)
     polling_task = asyncio.create_task(
         dp.start_polling(bot, handle_signals=False),
@@ -269,11 +269,11 @@ async def start_update_delivery(app: FastAPI) -> None:
     if settings.webhook_url:
         webhook_url = ensure_webhook_url(str(settings.webhook_url))
         try:
-            logger.info("Starting webhook mode: %s", webhook_url)
+            logger.info("Starting webhook mode: {}", webhook_url)
             await bot.set_webhook(webhook_url)
             webhook_info = await bot.get_webhook_info()
             logger.info(
-                "Webhook active: url=%s pending_updates=%s last_error_message=%s",
+                "Webhook active: url={} pending_updates={} last_error_message={}",
                 webhook_info.url,
                 webhook_info.pending_update_count,
                 webhook_info.last_error_message or "none",
