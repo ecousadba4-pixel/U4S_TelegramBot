@@ -68,6 +68,7 @@ MSG_INVALID_CONTACT = "❌ Вы можете проверить информац
 MSG_NO_BONUS = "Бонусы для указанного номера не найдены."
 MSG_BALANCE_TEMPLATE = "👋 {first_name}, у Вас накоплено бонусов {amount} рублей.\nВаш уровень лояльности — {level}."
 MSG_EXPIRY_TEMPLATE = "\nСрок действия бонусов: до {date}."
+UPDATE_DELIVERY_TIMEOUT_SECONDS = 15
 
 # SQL запросы
 SQL_FETCH_USER = f"""
@@ -217,8 +218,14 @@ async def lifespan(app: FastAPI):
     app.state.bot_service = bot_service
     app.state.settings = settings
     app.state.polling_task = None
+    app.state.delivery_task = None
     app.state.update_delivery_mode = "starting"
-    await start_update_delivery(app)
+    delivery_task = asyncio.create_task(
+        initialize_update_delivery(app),
+        name="telegram-update-delivery-init",
+    )
+    delivery_task.add_done_callback(log_delivery_task_result)
+    app.state.delivery_task = delivery_task
     yield
     logger.info("Shutting down: stopping update delivery and closing pool")
     try:
@@ -253,9 +260,29 @@ def log_polling_task_result(task: asyncio.Task) -> None:
         logger.opt(exception=exc).error("Polling task stopped unexpectedly")
 
 
+def log_delivery_task_result(task: asyncio.Task) -> None:
+    if task.cancelled():
+        return
+    try:
+        exc = task.exception()
+    except asyncio.CancelledError:
+        return
+    if exc:
+        logger.opt(exception=exc).error("Update delivery init task stopped unexpectedly")
+
+
+async def initialize_update_delivery(app: FastAPI) -> None:
+    try:
+        await start_update_delivery(app)
+    except Exception:
+        logger.exception("Failed to initialize update delivery")
+        app.state.update_delivery_mode = "failed"
+
+
 async def start_polling_mode(app: FastAPI, reason: str) -> None:
     logger.warning("Starting polling mode: {}", reason)
-    await bot.delete_webhook(drop_pending_updates=False)
+    async with asyncio.timeout(UPDATE_DELIVERY_TIMEOUT_SECONDS):
+        await bot.delete_webhook(drop_pending_updates=False)
     polling_task = asyncio.create_task(
         dp.start_polling(bot, handle_signals=False),
         name="telegram-bot-polling",
@@ -270,8 +297,9 @@ async def start_update_delivery(app: FastAPI) -> None:
         webhook_url = ensure_webhook_url(str(settings.webhook_url))
         try:
             logger.info("Starting webhook mode: {}", webhook_url)
-            await bot.set_webhook(webhook_url)
-            webhook_info = await bot.get_webhook_info()
+            async with asyncio.timeout(UPDATE_DELIVERY_TIMEOUT_SECONDS):
+                await bot.set_webhook(webhook_url)
+                webhook_info = await bot.get_webhook_info()
             logger.info(
                 "Webhook active: url={} pending_updates={} last_error_message={}",
                 webhook_info.url,
@@ -289,10 +317,18 @@ async def start_update_delivery(app: FastAPI) -> None:
 
 
 async def stop_update_delivery(app: FastAPI) -> None:
+    delivery_task = getattr(app.state, "delivery_task", None)
+    if delivery_task and not delivery_task.done():
+        logger.info("Cancelling update delivery init task")
+        delivery_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await delivery_task
+    app.state.delivery_task = None
+
     polling_task = getattr(app.state, "polling_task", None)
     mode = getattr(app.state, "update_delivery_mode", "unknown")
     if polling_task is None:
-        logger.info("Update delivery stopped in %s mode; webhook registration kept as-is", mode)
+        logger.info("Update delivery stopped in {} mode; webhook registration kept as-is", mode)
         return
 
     logger.info("Stopping polling task")
