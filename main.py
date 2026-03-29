@@ -1,7 +1,7 @@
 import asyncio
 import logging
 import sys
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any, Optional
@@ -216,24 +216,19 @@ async def lifespan(app: FastAPI):
     )
     app.state.bot_service = bot_service
     app.state.settings = settings
-
-    if settings.webhook_url:
-        try:
-            webhook_url = ensure_webhook_url(str(settings.webhook_url))
-            logger.info("Setting Telegram webhook to %s", webhook_url)
-            await bot.set_webhook(webhook_url)
-            logger.info("Webhook set")
-        except Exception:
-            logger.exception("Failed to set webhook (continuing without webhook)")
-    else:
-        logger.warning("WEBHOOK_URL is not set; bot will not receive updates.")
+    app.state.polling_task = None
+    app.state.update_delivery_mode = "starting"
+    await start_update_delivery(app)
     yield
-    logger.info("Shutting down: deleting webhook and closing pool")
+    logger.info("Shutting down: stopping update delivery and closing pool")
     try:
-        await bot.delete_webhook()
+        await stop_update_delivery(app)
     except Exception:
-        logger.exception("Failed to delete webhook (ignoring)")
-    await bot_service.close()
+        logger.exception("Failed to stop update delivery cleanly")
+    try:
+        await bot_service.close()
+    finally:
+        await bot.session.close()
 
 
 app = FastAPI(lifespan=lifespan)
@@ -245,6 +240,66 @@ def ensure_webhook_url(url: str) -> str:
     if parsed.path and parsed.path != "/":
         return url
     return urlunparse(parsed._replace(path="/webhook"))
+
+
+def log_polling_task_result(task: asyncio.Task) -> None:
+    if task.cancelled():
+        return
+    try:
+        exc = task.exception()
+    except asyncio.CancelledError:
+        return
+    if exc:
+        logger.opt(exception=exc).error("Polling task stopped unexpectedly")
+
+
+async def start_polling_mode(app: FastAPI, reason: str) -> None:
+    logger.warning("Starting polling mode: %s", reason)
+    await bot.delete_webhook(drop_pending_updates=False)
+    polling_task = asyncio.create_task(
+        dp.start_polling(bot, handle_signals=False),
+        name="telegram-bot-polling",
+    )
+    polling_task.add_done_callback(log_polling_task_result)
+    app.state.polling_task = polling_task
+    app.state.update_delivery_mode = "polling"
+
+
+async def start_update_delivery(app: FastAPI) -> None:
+    if settings.webhook_url:
+        webhook_url = ensure_webhook_url(str(settings.webhook_url))
+        try:
+            logger.info("Starting webhook mode: %s", webhook_url)
+            await bot.set_webhook(webhook_url)
+            webhook_info = await bot.get_webhook_info()
+            logger.info(
+                "Webhook active: url=%s pending_updates=%s last_error_message=%s",
+                webhook_info.url,
+                webhook_info.pending_update_count,
+                webhook_info.last_error_message or "none",
+            )
+            app.state.update_delivery_mode = "webhook"
+            return
+        except Exception:
+            logger.exception("Failed to set webhook")
+            await start_polling_mode(app, "webhook setup failed")
+            return
+
+    await start_polling_mode(app, "WEBHOOK_URL is not set")
+
+
+async def stop_update_delivery(app: FastAPI) -> None:
+    polling_task = getattr(app.state, "polling_task", None)
+    mode = getattr(app.state, "update_delivery_mode", "unknown")
+    if polling_task is None:
+        logger.info("Update delivery stopped in %s mode; webhook registration kept as-is", mode)
+        return
+
+    logger.info("Stopping polling task")
+    polling_task.cancel()
+    with suppress(asyncio.CancelledError):
+        await polling_task
+    app.state.polling_task = None
 
 @dp.message(CommandStart())
 async def cmd_start(message: types.Message):
@@ -326,4 +381,7 @@ async def telegram_webhook(request: Request):
 
 @app.get("/")
 async def root():
-    return {"status": "ok"}
+    return {
+        "status": "ok",
+        "update_delivery_mode": getattr(app.state, "update_delivery_mode", "unknown"),
+    }
