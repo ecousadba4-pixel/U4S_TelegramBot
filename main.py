@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import re
 import sys
 from contextlib import asynccontextmanager, suppress
 from datetime import datetime
@@ -15,7 +16,9 @@ from fastapi import FastAPI, Request, Response, status
 from loguru import logger
 from prometheus_fastapi_instrumentator import Instrumentator  # ✨ добавили
 from json import JSONDecodeError
-from urllib.parse import urlparse, urlunparse
+from telethon import Button as TelethonButton, TelegramClient, connection, events
+from telethon.tl import types as telethon_types
+from urllib.parse import parse_qs, urlparse, urlunparse
 
 from config import get_settings
 
@@ -219,6 +222,7 @@ async def lifespan(app: FastAPI):
     app.state.settings = settings
     app.state.polling_task = None
     app.state.delivery_task = None
+    app.state.mtproto_client = None
     app.state.update_delivery_mode = "starting"
     delivery_task = asyncio.create_task(
         initialize_update_delivery(app),
@@ -247,6 +251,36 @@ def ensure_webhook_url(url: str) -> str:
     if parsed.path and parsed.path != "/":
         return url
     return urlunparse(parsed._replace(path="/webhook"))
+
+
+def parse_mtproxy_link(proxy_link: str) -> tuple[str, int, str]:
+    parsed = urlparse(proxy_link)
+    params = parse_qs(parsed.query)
+    server = params.get("server", [None])[0]
+    port_raw = params.get("port", [None])[0]
+    secret = params.get("secret", [None])[0]
+    if not server or not port_raw or not secret:
+        raise ValueError("TELEGRAM_MTPROXY_LINK must include server, port and secret")
+    try:
+        port = int(port_raw)
+    except ValueError as exc:
+        raise ValueError("MTProto proxy port must be an integer") from exc
+    return server, port, secret
+
+
+def build_mtproto_client() -> TelegramClient:
+    client_kwargs: dict[str, Any] = {}
+    if settings.telegram_mtproxy_link:
+        server, port, secret = parse_mtproxy_link(settings.telegram_mtproxy_link)
+        logger.info("Using MTProto proxy {}:{}", server, port)
+        client_kwargs["connection"] = connection.ConnectionTcpMTProxyRandomizedIntermediate
+        client_kwargs["proxy"] = (server, port, secret)
+    return TelegramClient(
+        "mtproto-bot-session",
+        settings.telegram_api_id,
+        settings.telegram_api_hash,
+        **client_kwargs,
+    )
 
 
 def log_polling_task_result(task: asyncio.Task) -> None:
@@ -279,6 +313,99 @@ async def initialize_update_delivery(app: FastAPI) -> None:
         app.state.update_delivery_mode = "failed"
 
 
+async def build_bonus_response(bot_service: BotService, user_id: int, phone_number: str) -> str:
+    try:
+        await bot_service.log_usage_stat(user_id=user_id, phone=phone_number, command="contact")
+    except Exception as exc:
+        logger.error("Failed to log usage stat for user {}: {}", user_id, exc)
+
+    try:
+        guest_info = await bot_service.get_guest_bonus(phone_number)
+    except Exception as exc:
+        logger.error(
+            "Failed to fetch bonus info for phone {} (user_id={}): {}",
+            phone_number,
+            user_id,
+            exc,
+        )
+        raise RuntimeError("Произошла ошибка при получении данных. Попробуйте позже.") from exc
+
+    if not guest_info:
+        return MSG_NO_BONUS
+
+    bonus_amount = bot_service.format_bonus_amount(guest_info["bonus_balances"])
+    response_text = MSG_BALANCE_TEMPLATE.format(
+        first_name=guest_info["first_name"],
+        amount=bonus_amount,
+        level=guest_info["loyalty_level"],
+    )
+    if bonus_amount > 0:
+        response_text += MSG_EXPIRY_TEMPLATE.format(date=guest_info["expire_date"])
+    return response_text
+
+
+def register_mtproto_handlers(app: FastAPI, client: TelegramClient) -> None:
+    @client.on(events.NewMessage(incoming=True, pattern=r"^/start(?:@\w+)?(?:\s|$)"))
+    async def mtproto_cmd_start(event: events.NewMessage.Event) -> None:
+        await event.respond(
+            MSG_START,
+            buttons=[[TelethonButton.request_phone(BTN_SHARE_PHONE)]],
+        )
+
+    @client.on(events.NewMessage(incoming=True))
+    async def mtproto_handle_contact(event: events.NewMessage.Event) -> None:
+        media = event.message.media
+        if not isinstance(media, telethon_types.MessageMediaContact):
+            return
+
+        sender = await event.get_sender()
+        sender_id = getattr(sender, "id", None) or 0
+        if media.user_id and sender_id and media.user_id != sender_id:
+            await event.respond(MSG_INVALID_CONTACT)
+            return
+
+        phone_number = media.phone_number
+        logger.info("Received MTProto contact from {} (user_id={})", phone_number, sender_id)
+        bot_service = app.state.bot_service
+        try:
+            response_text = await build_bonus_response(
+                bot_service=bot_service,
+                user_id=int(sender_id),
+                phone_number=phone_number,
+            )
+        except RuntimeError as exc:
+            await event.respond(str(exc))
+            return
+
+        await event.respond(response_text)
+
+
+async def start_mtproto_mode(app: FastAPI) -> None:
+    logger.info("Starting MTProto transport")
+    try:
+        client = build_mtproto_client()
+    except ValueError:
+        logger.exception("Failed to parse MTProto proxy settings")
+        app.state.update_delivery_mode = "mtproto_invalid_proxy"
+        return
+
+    register_mtproto_handlers(app, client)
+    app.state.mtproto_client = client
+
+    try:
+        async with asyncio.timeout(UPDATE_DELIVERY_TIMEOUT_SECONDS):
+            await client.start(bot_token=settings.telegram_bot_token)
+        me = await client.get_me()
+        logger.info("MTProto bot started as {}", getattr(me, "username", None) or getattr(me, "id", "unknown"))
+        app.state.update_delivery_mode = "mtproto"
+    except TimeoutError:
+        logger.error("Timed out while starting MTProto transport")
+        app.state.update_delivery_mode = "telegram_mtproto_unreachable"
+    except Exception:
+        logger.exception("Failed to start MTProto transport")
+        app.state.update_delivery_mode = "telegram_mtproto_failed"
+
+
 async def start_polling_mode(app: FastAPI, reason: str) -> None:
     logger.warning("Starting polling mode: {}", reason)
     try:
@@ -304,6 +431,10 @@ async def start_polling_mode(app: FastAPI, reason: str) -> None:
 
 
 async def start_update_delivery(app: FastAPI) -> None:
+    if settings.telegram_transport == "mtproto":
+        await start_mtproto_mode(app)
+        return
+
     if settings.webhook_url:
         webhook_url = ensure_webhook_url(str(settings.webhook_url))
         try:
@@ -335,6 +466,12 @@ async def stop_update_delivery(app: FastAPI) -> None:
         with suppress(asyncio.CancelledError):
             await delivery_task
     app.state.delivery_task = None
+
+    mtproto_client = getattr(app.state, "mtproto_client", None)
+    if mtproto_client is not None:
+        logger.info("Disconnecting MTProto client")
+        await mtproto_client.disconnect()
+        app.state.mtproto_client = None
 
     polling_task = getattr(app.state, "polling_task", None)
     mode = getattr(app.state, "update_delivery_mode", "unknown")
@@ -369,44 +506,28 @@ async def handle_contact(message: types.Message):
 
     phone_number = message.contact.phone_number
     user_id = message.from_user.id
-    logger.info("Received contact from %s (user_id=%s)", phone_number, user_id)
+    logger.info("Received contact from {} (user_id={})", phone_number, user_id)
     bot_service = app.state.bot_service
-
-    # Записать событие
     try:
-        await bot_service.log_usage_stat(user_id=user_id, phone=phone_number, command="contact")
-    except Exception as e:  # Логируем ошибку логирования, но не прерываем основной процесс
-        logger.error(f"Failed to log usage stat for user {user_id}: {e}")
-
-    try:
-        guest_info = await bot_service.get_guest_bonus(phone_number)
-    except Exception as e:
-        logger.error(f"Failed to fetch bonus info for phone {phone_number} (user_id={user_id}): {e}")
-        await message.answer("Произошла ошибка при получении данных. Попробуйте позже.")
+        response_text = await build_bonus_response(
+            bot_service=bot_service,
+            user_id=user_id,
+            phone_number=phone_number,
+        )
+    except RuntimeError as exc:
+        await message.answer(str(exc))
         return
-
-    if not guest_info:
-        await message.answer(MSG_NO_BONUS)
-        return
-
-    bonus_amount = bot_service.format_bonus_amount(guest_info['bonus_balances'])
-
-    response_text = MSG_BALANCE_TEMPLATE.format(
-        first_name=guest_info['first_name'],
-        amount=bonus_amount,
-        level=guest_info['loyalty_level']
-    )
-    if bonus_amount > 0:
-        response_text += MSG_EXPIRY_TEMPLATE.format(date=guest_info['expire_date'])
 
     try:
         await message.answer(response_text)
-    except Exception as e:
-        logger.error(f"Failed to send response to user {user_id}: {e}")
+    except Exception as exc:
+        logger.error("Failed to send response to user {}: {}", user_id, exc)
 
 
 @app.post("/webhook")
 async def telegram_webhook(request: Request):
+    if settings.telegram_transport != "bot_api":
+        return Response(status_code=status.HTTP_404_NOT_FOUND)
     try:
         data = await request.json()
     except JSONDecodeError:
@@ -430,5 +551,6 @@ async def telegram_webhook(request: Request):
 async def root():
     return {
         "status": "ok",
+        "telegram_transport": settings.telegram_transport,
         "update_delivery_mode": getattr(app.state, "update_delivery_mode", "unknown"),
     }
