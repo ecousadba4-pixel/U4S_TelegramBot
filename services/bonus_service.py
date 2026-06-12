@@ -131,10 +131,20 @@ class BotService:
         return self.parse_guest_info(row)
 
     async def log_usage_stat(self, user_id: int, phone: str, command: str) -> None:
+        clean_phone = self.normalize_phone(phone)
+        if not clean_phone:
+            logger.warning("Skip usage stat for user {}: empty phone", user_id)
+            return
         try:
             pool = await self._ensure_pool()
             async with pool.acquire() as conn:
-                await conn.execute(SQL_LOG_USAGE, user_id, phone, command)
+                await conn.execute(SQL_LOG_USAGE, user_id, clean_phone, command)
+            logger.info(
+                "Usage stat logged: user_id={} phone={} command={}",
+                user_id,
+                clean_phone,
+                command,
+            )
         except Exception:
             logger.exception("Failed to log usage stat")
 
