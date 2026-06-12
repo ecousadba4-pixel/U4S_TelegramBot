@@ -10,10 +10,17 @@ from typing import Any, Optional
 import aiohttp
 from loguru import logger
 
-from services.messages import BTN_SHARE_PHONE, CMD_START_DESCRIPTION, CMD_START_NAME, MSG_START
+from services.messages import (
+    BTN_SHARE_PHONE,
+    BTN_START,
+    CALLBACK_START_PAYLOAD,
+    CMD_START_DESCRIPTION,
+    CMD_START_NAME,
+    MSG_START,
+)
 
 WEBHOOK_SECRET_HEADER = "X-Max-Bot-Api-Secret"
-SUBSCRIPTION_UPDATE_TYPES = ["bot_started", "message_created"]
+SUBSCRIPTION_UPDATE_TYPES = ["bot_started", "message_created", "message_callback"]
 BOT_COMMANDS = [
     {
         "name": CMD_START_NAME,
@@ -21,6 +28,31 @@ BOT_COMMANDS = [
     }
 ]
 TEL_PATTERN = re.compile(r"^TEL(?:;[^:]*)?:(.+)$", re.MULTILINE)
+
+
+def build_start_keyboard() -> list[dict[str, Any]]:
+    return [
+        {
+            "type": "inline_keyboard",
+            "payload": {
+                "buttons": [
+                    [
+                        {
+                            "type": "callback",
+                            "text": BTN_START,
+                            "payload": CALLBACK_START_PAYLOAD,
+                        }
+                    ],
+                    [
+                        {
+                            "type": "request_contact",
+                            "text": BTN_SHARE_PHONE,
+                        }
+                    ],
+                ]
+            },
+        }
+    ]
 
 
 class MaxApiClient:
@@ -82,41 +114,50 @@ class MaxApiClient:
         logger.info("MAX webhook subscription registered: {}", webhook_url)
         return result
 
+    async def get_bot_info(self) -> dict[str, Any]:
+        return await self._request("GET", "/me")
+
     async def set_bot_commands(self) -> dict[str, Any]:
         result = await self._request(
             "PATCH",
             "/me",
             json_body={"commands": BOT_COMMANDS},
         )
-        logger.info("MAX bot commands registered: {}", [cmd["name"] for cmd in BOT_COMMANDS])
+        bot_info = await self.get_bot_info()
+        commands = bot_info.get("commands") or []
+        command_names = [cmd.get("name") for cmd in commands if isinstance(cmd, dict)]
+        logger.info("MAX bot commands active: {}", command_names or "none")
         return result
 
-    async def send_message(self, user_id: int, text: str) -> dict[str, Any]:
+    async def answer_callback(self, callback_id: str) -> dict[str, Any]:
+        return await self._request(
+            "POST",
+            "/answers",
+            params={"callback_id": callback_id},
+            json_body={},
+        )
+
+    async def send_message(
+        self,
+        user_id: int,
+        text: str,
+        *,
+        attachments: Optional[list[dict[str, Any]]] = None,
+    ) -> dict[str, Any]:
+        json_body: dict[str, Any] = {"text": text}
+        if attachments:
+            json_body["attachments"] = attachments
         return await self._request(
             "POST",
             "/messages",
             params={"user_id": user_id},
-            json_body={"text": text},
+            json_body=json_body,
         )
 
     async def send_start_message(self, user_id: int) -> dict[str, Any]:
         payload = {
             "text": MSG_START,
-            "attachments": [
-                {
-                    "type": "inline_keyboard",
-                    "payload": {
-                        "buttons": [
-                            [
-                                {
-                                    "type": "request_contact",
-                                    "text": BTN_SHARE_PHONE,
-                                }
-                            ]
-                        ]
-                    },
-                }
-            ],
+            "attachments": build_start_keyboard(),
         }
         return await self._request(
             "POST",

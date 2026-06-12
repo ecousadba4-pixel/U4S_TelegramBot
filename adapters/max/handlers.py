@@ -9,11 +9,12 @@ from loguru import logger
 
 from adapters.max.client import (
     MaxApiClient,
+    build_start_keyboard,
     parse_phone_from_vcf,
     verify_contact_hash,
 )
 from services.bonus_service import BotService
-from services.messages import CMD_START_NAME, MSG_INVALID_CONTACT
+from services.messages import CALLBACK_START_PAYLOAD, CMD_START_NAME, MSG_INVALID_CONTACT
 from services.responses import build_bonus_response
 
 START_COMMAND_PATTERN = re.compile(rf"^/?{CMD_START_NAME}(?:@\w+)?(?:\s|$)", re.IGNORECASE)
@@ -49,6 +50,10 @@ def is_start_command(text: str) -> bool:
     return bool(START_COMMAND_PATTERN.match(text.strip()))
 
 
+async def send_start_flow(user_id: int, *, max_client: MaxApiClient) -> None:
+    await max_client.send_start_message(user_id)
+
+
 async def handle_bot_started(
     update: dict[str, Any],
     *,
@@ -59,7 +64,30 @@ async def handle_bot_started(
         logger.warning("bot_started update without user_id: {}", update)
         return
     logger.info("bot_started for user_id={}", user_id)
-    await max_client.send_start_message(user_id)
+    await send_start_flow(user_id, max_client=max_client)
+
+
+async def handle_message_callback(
+    update: dict[str, Any],
+    *,
+    max_client: MaxApiClient,
+) -> None:
+    callback = update.get("callback") or {}
+    payload = callback.get("payload")
+    callback_id = callback.get("callback_id")
+    user_id = extract_user_id(callback.get("user"))
+
+    if payload != CALLBACK_START_PAYLOAD or user_id is None:
+        return
+
+    logger.info("Received start callback from user_id={}", user_id)
+    if callback_id:
+        try:
+            await max_client.answer_callback(str(callback_id))
+        except Exception:
+            logger.exception("Failed to answer callback for user_id={}", user_id)
+
+    await send_start_flow(user_id, max_client=max_client)
 
 
 async def handle_message_created(
@@ -103,13 +131,17 @@ async def handle_message_created(
             await max_client.send_message(user_id, str(exc))
             return
 
-        await max_client.send_message(user_id, response_text)
+        await max_client.send_message(
+            user_id,
+            response_text,
+            attachments=build_start_keyboard(),
+        )
         return
 
     message_text = extract_message_text(message)
     if is_start_command(message_text):
         logger.info("Received /start command from user_id={}", user_id)
-        await max_client.send_start_message(user_id)
+        await send_start_flow(user_id, max_client=max_client)
 
 
 async def handle_update(
@@ -122,6 +154,8 @@ async def handle_update(
     update_type = update.get("update_type")
     if update_type == "bot_started":
         await handle_bot_started(update, max_client=max_client)
+    elif update_type == "message_callback":
+        await handle_message_callback(update, max_client=max_client)
     elif update_type == "message_created":
         await handle_message_created(
             update,
