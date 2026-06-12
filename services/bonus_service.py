@@ -43,6 +43,7 @@ class BotService:
         self._max_size = max_size
         self._pool: Optional[asyncpg.Pool] = None
         self._pool_lock = asyncio.Lock()
+        self._verified_phones: dict[int, str] = {}
 
     def _pool_active(self) -> bool:
         return bool(
@@ -136,6 +137,12 @@ class BotService:
                 await conn.execute(SQL_LOG_USAGE, user_id, phone, command)
         except Exception:
             logger.exception("Failed to log usage stat")
+
+    def remember_verified_phone(self, user_id: int, phone: str) -> None:
+        self._verified_phones[user_id] = phone
+
+    def get_verified_phone(self, user_id: int) -> Optional[str]:
+        return self._verified_phones.get(user_id)
 
     @staticmethod
     def format_bonus_amount(value: Any) -> int:

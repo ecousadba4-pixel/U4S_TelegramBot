@@ -11,9 +11,9 @@ import aiohttp
 from loguru import logger
 
 from services.messages import (
+    BTN_CHECK_BONUS,
     BTN_SHARE_PHONE,
-    BTN_START,
-    CALLBACK_START_PAYLOAD,
+    CALLBACK_CHECK_BONUS_PAYLOAD,
     CMD_START_DESCRIPTION,
     CMD_START_NAME,
     MSG_START,
@@ -30,7 +30,25 @@ BOT_COMMANDS = [
 TEL_PATTERN = re.compile(r"^TEL(?:;[^:]*)?:(.+)$", re.MULTILINE)
 
 
-def build_start_keyboard() -> list[dict[str, Any]]:
+def build_welcome_keyboard() -> list[dict[str, Any]]:
+    return [
+        {
+            "type": "inline_keyboard",
+            "payload": {
+                "buttons": [
+                    [
+                        {
+                            "type": "request_contact",
+                            "text": BTN_SHARE_PHONE,
+                        }
+                    ],
+                ]
+            },
+        }
+    ]
+
+
+def build_bonus_keyboard() -> list[dict[str, Any]]:
     return [
         {
             "type": "inline_keyboard",
@@ -39,14 +57,8 @@ def build_start_keyboard() -> list[dict[str, Any]]:
                     [
                         {
                             "type": "callback",
-                            "text": BTN_START,
-                            "payload": CALLBACK_START_PAYLOAD,
-                        }
-                    ],
-                    [
-                        {
-                            "type": "request_contact",
-                            "text": BTN_SHARE_PHONE,
+                            "text": BTN_CHECK_BONUS,
+                            "payload": CALLBACK_CHECK_BONUS_PAYLOAD,
                         }
                     ],
                 ]
@@ -154,10 +166,10 @@ class MaxApiClient:
             json_body=json_body,
         )
 
-    async def send_start_message(self, user_id: int) -> dict[str, Any]:
+    async def send_welcome_message(self, user_id: int) -> dict[str, Any]:
         payload = {
             "text": MSG_START,
-            "attachments": build_start_keyboard(),
+            "attachments": build_welcome_keyboard(),
         }
         return await self._request(
             "POST",
@@ -165,6 +177,9 @@ class MaxApiClient:
             params={"user_id": user_id},
             json_body=payload,
         )
+
+    async def send_start_message(self, user_id: int) -> dict[str, Any]:
+        return await self.send_welcome_message(user_id)
 
 
 def normalize_vcf_info(vcf_info: str) -> str:
