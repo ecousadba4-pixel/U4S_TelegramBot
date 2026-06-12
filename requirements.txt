@@ -7,6 +7,3 @@ pydantic-settings
 pydantic
 loguru
 prometheus-fastapi-instrumentator
-pytest
-pytest-asyncio
-httpx

@@ -135,6 +135,7 @@ Production: reverse proxy с TLS на порту 443. MAX принимает web
 ## Тестирование
 
 ```bash
+pip install -r requirements-dev.txt
 pytest tests/ -v
 ```
 

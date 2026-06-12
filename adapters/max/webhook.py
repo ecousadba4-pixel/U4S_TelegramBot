@@ -18,6 +18,17 @@ if TYPE_CHECKING:
 router = APIRouter()
 
 
+def _log_update_task_result(task: asyncio.Task) -> None:
+    if task.cancelled():
+        return
+    try:
+        exc = task.exception()
+    except asyncio.CancelledError:
+        return
+    if exc:
+        logger.opt(exception=exc).error("Failed to process MAX update")
+
+
 @router.post("/webhook")
 async def max_webhook(request: Request) -> Response:
     settings = request.app.state.settings
@@ -39,18 +50,16 @@ async def max_webhook(request: Request) -> Response:
 
     logger.info("Webhook received: update_type={}", data.get("update_type"))
 
-    max_client = request.app.state.max_client
-    bot_service = request.app.state.bot_service
-
-    asyncio.create_task(
+    task = asyncio.create_task(
         handle_update(
             data,
-            max_client=max_client,
-            bot_service=bot_service,
+            max_client=request.app.state.max_client,
+            bot_service=request.app.state.bot_service,
             bot_token=settings.max_bot_token,
         ),
         name=f"max-update-{data.get('update_type', 'unknown')}",
     )
+    task.add_done_callback(_log_update_task_result)
 
     return Response(status_code=status.HTTP_200_OK)
 

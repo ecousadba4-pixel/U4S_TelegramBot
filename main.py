@@ -52,7 +52,7 @@ def ensure_webhook_url(url: str) -> str:
     return urlunparse(parsed._replace(path="/webhook"))
 
 
-async def initialize_max_webhook(app: FastAPI) -> None:
+async def initialize_max_bot(app: FastAPI) -> None:
     max_client: MaxApiClient = app.state.max_client
 
     try:
@@ -99,7 +99,7 @@ async def lifespan(app: FastAPI):
     app.state.settings = settings
     app.state.update_delivery_mode = "starting"
 
-    await initialize_max_webhook(app)
+    await initialize_max_bot(app)
 
     yield
 

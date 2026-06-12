@@ -8,7 +8,6 @@ CALLBACK_CHECK_BONUS_PAYLOAD = "check_bonus"
 MSG_START = (
     "Нажмите «Поделиться номером телефона», чтобы узнать актуальный бонусный баланс."
 )
-BTN_START = "Старт"
 BTN_CHECK_BONUS = "Проверить бонусы"
 BTN_SHARE_PHONE = "Поделиться номером телефона"
 MSG_INVALID_CONTACT = (

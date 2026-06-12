@@ -130,7 +130,7 @@ class MaxApiClient:
         return await self._request("GET", "/me")
 
     async def set_bot_commands(self) -> dict[str, Any]:
-        result = await self._request(
+        await self._request(
             "PATCH",
             "/me",
             json_body={"commands": BOT_COMMANDS},
@@ -139,7 +139,7 @@ class MaxApiClient:
         commands = bot_info.get("commands") or []
         command_names = [cmd.get("name") for cmd in commands if isinstance(cmd, dict)]
         logger.info("MAX bot commands active: {}", command_names or "none")
-        return result
+        return bot_info
 
     async def answer_callback(self, callback_id: str) -> dict[str, Any]:
         return await self._request(
@@ -177,9 +177,6 @@ class MaxApiClient:
             params={"user_id": user_id},
             json_body=payload,
         )
-
-    async def send_start_message(self, user_id: int) -> dict[str, Any]:
-        return await self.send_welcome_message(user_id)
 
 
 def normalize_vcf_info(vcf_info: str) -> str:
