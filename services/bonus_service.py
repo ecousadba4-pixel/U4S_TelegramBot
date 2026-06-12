@@ -18,7 +18,8 @@ COL_LOYALTY_LEVEL = "loyalty_level"
 COL_BONUS_BALANCES = "bonus_balances"
 COL_LAST_DATE_VISIT = "last_date_visit"
 
-TABLE_TELEGRAM_BOT_STATS = "telegram_bot_usage_stats"
+# Legacy table name in PostgreSQL; schema is not renamed to avoid DB migration.
+TABLE_BOT_USAGE_STATS = "telegram_bot_usage_stats"
 COL_USER_ID = "user_id"
 COL_PHONE_STATS = "phone"
 COL_COMMAND = "command"
@@ -30,7 +31,7 @@ WHERE {COL_PHONE} = $1
 """
 
 SQL_LOG_USAGE = f"""
-INSERT INTO {TABLE_TELEGRAM_BOT_STATS} ({COL_USER_ID}, {COL_PHONE_STATS}, {COL_COMMAND})
+INSERT INTO {TABLE_BOT_USAGE_STATS} ({COL_USER_ID}, {COL_PHONE_STATS}, {COL_COMMAND})
 VALUES ($1, $2, $3)
 """
 

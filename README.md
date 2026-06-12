@@ -120,7 +120,10 @@ Production: reverse proxy с TLS на порту 443. MAX принимает web
 
 ## SQL-изменения
 
-Не требуются. Используются существующие таблицы `bonuses_balance` и `telegram_bot_usage_stats`.
+Не требуются. Используются существующие таблицы PostgreSQL:
+
+- `bonuses_balance` — поиск бонусов по телефону
+- `telegram_bot_usage_stats` — лог использования (имя таблицы историческое, схема не менялась)
 
 ## Тестирование
 
