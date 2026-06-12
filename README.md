@@ -1,69 +1,140 @@
-# Упрощённый сервер для проверки бонусов
+# MAX Messenger Bonus Bot
 
-Проект предоставляет лёгкий HTTP-сервер, который имитирует обработку вебхуков Telegram и
-выдаёт информацию о бонусном балансе по номеру телефона. В отличие от исходной версии,
-сервер не требует сторонних Python-библиотек и работает только на стандартной библиотеке.
+HTTP-сервис для проверки бонусного баланса по номеру телефона через чат-бота MAX Messenger.
 
 ## Возможности
 
-- Эндпоинт `GET /` возвращает статус сервиса и подсказку для пользователя.
-- Эндпоинт `POST /webhook` принимает JSON c данными сообщения и контактами.
-  Если контакт принадлежит отправителю, сервер возвращает текст с информацией о бонусах.
-- Телефон автоматически нормализуется к формату из 11 цифр (начиная с `7`).
-- Чувствительные данные в логах маскируются.
-- Встроенный тестовый набор данных упрощает проверку работы сервиса.
+- Webhook-интеграция с [MAX Bot API](https://dev.max.ru/docs-api)
+- Сценарий: запуск бота → кнопка «Поделиться номером телефона» → поиск в PostgreSQL → ответ с балансом
+- Валидация контакта через HMAC-SHA256 (как в документации MAX)
+- Prometheus-метрики на `/metrics`
+- Health-check на `GET /`
+
+## Архитектура
+
+```
+MAX platform-api.max.ru
+        │ POST /webhook (Update)
+        ▼
+adapters/max/webhook.py → handlers.py → services/responses.py
+        │                                      │
+        └──── POST /messages ──────────────────┘
+                                               ▼
+                                    services/bonus_service.py → PostgreSQL
+```
+
+## Переменные окружения
+
+| Переменная | Обязательна | Описание |
+|------------|-------------|----------|
+| `MAX_BOT_TOKEN` | да | Токен бота из MAX для партнёров |
+| `MAX_WEBHOOK_SECRET` | да | Секрет 5–256 символов `[a-zA-Z0-9_-]` |
+| `MAX_WEBHOOK_URL` | да (production) | HTTPS URL webhook, например `https://your-domain.com/webhook` |
+| `MAX_API_URL` | нет | По умолчанию `https://platform-api.max.ru` |
+| `DATABASE_URL` | да | PostgreSQL DSN |
+| `PORT` | нет | Порт HTTP-сервера (по умолчанию `8000`) |
+| `POOL_MIN_SIZE` | нет | Мин. размер пула БД (по умолчанию `1`) |
+| `POOL_MAX_SIZE` | нет | Макс. размер пула БД (по умолчанию `10`) |
+
+Пример `.env`:
+
+```env
+MAX_BOT_TOKEN=your_max_bot_token
+MAX_WEBHOOK_SECRET=your_secret_123
+MAX_WEBHOOK_URL=https://your-domain.com/webhook
+MAX_API_URL=https://platform-api.max.ru
+DATABASE_URL=postgresql://user:pass@localhost:5432/dbname
+PORT=8000
+```
 
 ## Запуск
 
-```bash
-python main.py
-```
-
-По умолчанию сервер стартует на порту `8000`. Порт можно изменить переменной окружения `PORT`:
+### Локально
 
 ```bash
-PORT=8080 python main.py
+pip install -r requirements.txt
+uvicorn main:app --host 0.0.0.0 --port 8000
 ```
 
-## Передача собственных данных
+### Docker
 
-Тестовую базу можно заменить, передав путь к JSON-файлу в переменной окружения `BONUS_DATA_FILE`.
-Структура файла:
+```bash
+docker build -t u4s-max-bot .
+docker run -p 8000:8000 --env-file .env u4s-max-bot
+```
+
+Production: reverse proxy с TLS на порту 443. MAX принимает webhook только по HTTPS с сертификатом от доверенного CA ([документация](https://dev.max.ru/docs-api/methods/POST/subscriptions)).
+
+При старте приложение регистрирует подписку `POST /subscriptions` с типами событий `bot_started` и `message_created`.
+
+## Примеры webhook MAX
+
+### Входящий `bot_started`
 
 ```json
 {
-  "+7 (999) 000-00-00": {
-    "first_name": "Ирина",
-    "loyalty_level": "gold",
-    "bonus_balances": 1250,
-    "last_visit": "2024-08-15"
+  "update_type": "bot_started",
+  "timestamp": 1737500130100,
+  "user": {"user_id": 12345, "first_name": "Иван", "is_bot": false}
+}
+```
+
+Ответ сервера: `200 OK`. Бот отправляет приветствие с кнопкой `request_contact`.
+
+### Входящий `message_created` (контакт)
+
+```json
+{
+  "update_type": "message_created",
+  "timestamp": 1737500200000,
+  "message": {
+    "sender": {"user_id": 12345, "first_name": "Иван"},
+    "body": {
+      "attachments": [{
+        "type": "contact",
+        "payload": {
+          "vcf_info": "BEGIN:VCARD\\r\\nVERSION:3.0\\r\\nTEL;TYPE=cell:79991234567\\r\\nFN:Ivan\\r\\nEND:VCARD\\r\\n",
+          "hash": "computed_hmac_hex"
+        }
+      }]
+    }
   }
 }
 ```
 
-Для записей без явного поля `"expire_date"` срок действия рассчитывается от даты `last_visit`
-на основе переменной окружения `DEFAULT_EXPIRY_DAYS` (по умолчанию 365 дней).
+Заголовок запроса: `X-Max-Bot-Api-Secret: {MAX_WEBHOOK_SECRET}`
 
-## Пример запроса
+Ответ сервера: `200 OK`. Бот отправляет текст с балансом или «Бонусы не найдены».
 
-```bash
-curl -X POST http://localhost:8000/webhook \
-  -H "Content-Type: application/json" \
-  -d '{
-        "message": {
-          "from": {"id": 101, "first_name": "Ирина"},
-          "contact": {"phone_number": "+7 (999) 000-00-00", "user_id": 101}
-        }
-      }'
-```
-
-Ответ:
+### Исходящий ответ бота (через MAX API)
 
 ```json
-{"reply":"👋 Ирина, у Вас накоплено бонусов 1250 рублей.\nВаш уровень лояльности — gold.\nСрок действия бонусов: до 2025-08-15."}
+{
+  "message": {
+    "body": {
+      "text": "👋 Иван, у Вас накоплено бонусов 1250 рублей.\nВаш уровень лояльности — gold."
+    }
+  }
+}
 ```
+
+## SQL-изменения
+
+Не требуются. Используются существующие таблицы `bonuses_balance` и `telegram_bot_usage_stats`.
+
+## Тестирование
+
+```bash
+pytest tests/ -v
+```
+
+Ручная проверка:
+
+1. Создать бота на [platform MAX](https://dev.max.ru/docs/chatbots/bots-create)
+2. Задать env-переменные и запустить сервис с публичным HTTPS URL
+3. Запустить бота в MAX → нажать «Поделиться контактом» → проверить ответ
 
 ## Требования
 
-- Python 3.10 или новее (требуется стандартная библиотека)
-- Дополнительные зависимости отсутствуют
+- Python 3.10+
+- PostgreSQL с таблицей `bonuses_balance`

@@ -1,6 +1,5 @@
 fastapi
 uvicorn[standard]
-aiogram
 asyncpg
 python-dateutil
 aiohttp
@@ -8,4 +7,6 @@ pydantic-settings
 pydantic
 loguru
 prometheus-fastapi-instrumentator
-telethon
+pytest
+pytest-asyncio
+httpx
