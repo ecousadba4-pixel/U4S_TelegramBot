@@ -65,7 +65,9 @@ docker run -p 8000:8000 --env-file .env u4s-max-bot
 
 Production: reverse proxy с TLS на порту 443. MAX принимает webhook только по HTTPS с сертификатом от доверенного CA ([документация](https://dev.max.ru/docs-api/methods/POST/subscriptions)).
 
-При старте приложение регистрирует подписку `POST /subscriptions` с типами событий `bot_started` и `message_created`.
+При старте приложение регистрирует команды бота (`PATCH /me`) и подписку `POST /subscriptions` с типами событий `bot_started` и `message_created`.
+
+В меню чата отображается команда `/start` — «Проверить актуальный баланс бонусов». По ней бот повторно показывает кнопку «Поделиться номером телефона».
 
 ## Примеры webhook MAX
 

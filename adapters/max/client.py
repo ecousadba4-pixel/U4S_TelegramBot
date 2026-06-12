@@ -10,10 +10,16 @@ from typing import Any, Optional
 import aiohttp
 from loguru import logger
 
-from services.messages import BTN_SHARE_PHONE, MSG_START
+from services.messages import BTN_SHARE_PHONE, CMD_START_DESCRIPTION, CMD_START_NAME, MSG_START
 
 WEBHOOK_SECRET_HEADER = "X-Max-Bot-Api-Secret"
 SUBSCRIPTION_UPDATE_TYPES = ["bot_started", "message_created"]
+BOT_COMMANDS = [
+    {
+        "name": CMD_START_NAME,
+        "description": CMD_START_DESCRIPTION,
+    }
+]
 TEL_PATTERN = re.compile(r"^TEL(?:;[^:]*)?:(.+)$", re.MULTILINE)
 
 
@@ -74,6 +80,15 @@ class MaxApiClient:
         }
         result = await self._request("POST", "/subscriptions", json_body=payload)
         logger.info("MAX webhook subscription registered: {}", webhook_url)
+        return result
+
+    async def set_bot_commands(self) -> dict[str, Any]:
+        result = await self._request(
+            "PATCH",
+            "/me",
+            json_body={"commands": BOT_COMMANDS},
+        )
+        logger.info("MAX bot commands registered: {}", [cmd["name"] for cmd in BOT_COMMANDS])
         return result
 
     async def send_message(self, user_id: int, text: str) -> dict[str, Any]:

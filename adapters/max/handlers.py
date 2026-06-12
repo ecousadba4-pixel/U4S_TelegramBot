@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any, Optional
 
 from loguru import logger
@@ -12,8 +13,10 @@ from adapters.max.client import (
     verify_contact_hash,
 )
 from services.bonus_service import BotService
-from services.messages import MSG_INVALID_CONTACT
+from services.messages import CMD_START_NAME, MSG_INVALID_CONTACT
 from services.responses import build_bonus_response
+
+START_COMMAND_PATTERN = re.compile(rf"^/?{CMD_START_NAME}(?:@\w+)?(?:\s|$)", re.IGNORECASE)
 
 
 def extract_user_id(user: Optional[dict[str, Any]]) -> Optional[int]:
@@ -34,6 +37,16 @@ def extract_contact_attachment(message: dict[str, Any]) -> Optional[dict[str, An
             if payload.get("vcf_info"):
                 return payload
     return None
+
+
+def extract_message_text(message: dict[str, Any]) -> str:
+    body = message.get("body") or {}
+    text = body.get("text")
+    return text.strip() if isinstance(text, str) else ""
+
+
+def is_start_command(text: str) -> bool:
+    return bool(START_COMMAND_PATTERN.match(text.strip()))
 
 
 async def handle_bot_started(
@@ -64,35 +77,39 @@ async def handle_message_created(
         return
 
     contact_payload = extract_contact_attachment(message)
-    if contact_payload is None:
+    if contact_payload is not None:
+        vcf_info = contact_payload.get("vcf_info", "")
+        contact_hash = contact_payload.get("hash", "")
+
+        if not verify_contact_hash(bot_token, vcf_info, contact_hash):
+            logger.warning("Invalid contact hash for user_id={}", user_id)
+            await max_client.send_message(user_id, MSG_INVALID_CONTACT)
+            return
+
+        phone_number = parse_phone_from_vcf(vcf_info)
+        if not phone_number:
+            logger.warning("Could not parse phone from vcf for user_id={}", user_id)
+            await max_client.send_message(user_id, MSG_INVALID_CONTACT)
+            return
+
+        logger.info("Received MAX contact from {} (user_id={})", phone_number, user_id)
+        try:
+            response_text = await build_bonus_response(
+                bot_service=bot_service,
+                user_id=user_id,
+                phone_number=phone_number,
+            )
+        except RuntimeError as exc:
+            await max_client.send_message(user_id, str(exc))
+            return
+
+        await max_client.send_message(user_id, response_text)
         return
 
-    vcf_info = contact_payload.get("vcf_info", "")
-    contact_hash = contact_payload.get("hash", "")
-
-    if not verify_contact_hash(bot_token, vcf_info, contact_hash):
-        logger.warning("Invalid contact hash for user_id={}", user_id)
-        await max_client.send_message(user_id, MSG_INVALID_CONTACT)
-        return
-
-    phone_number = parse_phone_from_vcf(vcf_info)
-    if not phone_number:
-        logger.warning("Could not parse phone from vcf for user_id={}", user_id)
-        await max_client.send_message(user_id, MSG_INVALID_CONTACT)
-        return
-
-    logger.info("Received MAX contact from {} (user_id={})", phone_number, user_id)
-    try:
-        response_text = await build_bonus_response(
-            bot_service=bot_service,
-            user_id=user_id,
-            phone_number=phone_number,
-        )
-    except RuntimeError as exc:
-        await max_client.send_message(user_id, str(exc))
-        return
-
-    await max_client.send_message(user_id, response_text)
+    message_text = extract_message_text(message)
+    if is_start_command(message_text):
+        logger.info("Received /start command from user_id={}", user_id)
+        await max_client.send_start_message(user_id)
 
 
 async def handle_update(

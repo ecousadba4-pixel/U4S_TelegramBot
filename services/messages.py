@@ -1,7 +1,13 @@
 """User-facing message texts and button labels."""
 
+"""User-facing message texts and button labels."""
+
+CMD_START_NAME = "start"
+CMD_START_DESCRIPTION = "Проверить актуальный баланс бонусов"
+
 MSG_START = (
-    "Нажмите кнопку Поделиться номером телефона внизу, чтобы узнать бонусный баланс."
+    "Нажмите кнопку «Поделиться номером телефона», чтобы узнать актуальный бонусный баланс.\n"
+    "Команду /start можно вызывать из меню в любой момент."
 )
 BTN_SHARE_PHONE = "Поделиться номером телефона"
 MSG_INVALID_CONTACT = (

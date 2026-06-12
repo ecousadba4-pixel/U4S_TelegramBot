@@ -53,13 +53,22 @@ def ensure_webhook_url(url: str) -> str:
 
 
 async def initialize_max_webhook(app: FastAPI) -> None:
+    max_client: MaxApiClient = app.state.max_client
+
+    try:
+        async with asyncio.timeout(UPDATE_DELIVERY_TIMEOUT_SECONDS):
+            await max_client.set_bot_commands()
+    except TimeoutError:
+        logger.error("Timed out while registering MAX bot commands")
+    except Exception:
+        logger.exception("Failed to register MAX bot commands")
+
     if not settings.max_webhook_url:
         logger.warning("MAX_WEBHOOK_URL is not set; webhook subscription skipped")
         app.state.update_delivery_mode = "webhook_url_missing"
         return
 
     webhook_url = ensure_webhook_url(str(settings.max_webhook_url))
-    max_client: MaxApiClient = app.state.max_client
     try:
         async with asyncio.timeout(UPDATE_DELIVERY_TIMEOUT_SECONDS):
             await max_client.subscribe_webhook(webhook_url, settings.max_webhook_secret)
