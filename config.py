@@ -6,7 +6,7 @@ from typing import Optional
 from pydantic import Field, HttpUrl, PostgresDsn, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-DEFAULT_MAX_API_URL = "https://platform-api.max.ru"
+DEFAULT_MAX_API_URL = "https://platform-api2.max.ru"
 
 
 class Settings(BaseSettings):

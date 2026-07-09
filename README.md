@@ -13,7 +13,7 @@ HTTP-сервис для проверки бонусного баланса по
 ## Архитектура
 
 ```
-MAX platform-api.max.ru
+MAX platform-api2.max.ru
         │ POST /webhook (Update)
         ▼
 adapters/max/webhook.py → handlers.py → services/responses.py
@@ -30,7 +30,7 @@ adapters/max/webhook.py → handlers.py → services/responses.py
 | `MAX_BOT_TOKEN` | да | Токен бота из MAX для партнёров |
 | `MAX_WEBHOOK_SECRET` | да | Секрет 5–256 символов `[a-zA-Z0-9_-]` |
 | `MAX_WEBHOOK_URL` | да (production) | HTTPS URL webhook, например `https://your-domain.com/webhook` |
-| `MAX_API_URL` | нет | По умолчанию `https://platform-api.max.ru` |
+| `MAX_API_URL` | нет | По умолчанию `https://platform-api2.max.ru` |
 | `DATABASE_URL` | да | PostgreSQL DSN |
 | `PORT` | нет | Порт HTTP-сервера (по умолчанию `8000`) |
 | `POOL_MIN_SIZE` | нет | Мин. размер пула БД (по умолчанию `1`) |
@@ -42,7 +42,7 @@ adapters/max/webhook.py → handlers.py → services/responses.py
 MAX_BOT_TOKEN=your_max_bot_token
 MAX_WEBHOOK_SECRET=your_secret_123
 MAX_WEBHOOK_URL=https://your-domain.com/webhook
-MAX_API_URL=https://platform-api.max.ru
+MAX_API_URL=https://platform-api2.max.ru
 DATABASE_URL=postgresql://user:pass@localhost:5432/dbname
 PORT=8000
 ```
@@ -64,6 +64,11 @@ docker run -p 8000:8000 --env-file .env u4s-max-bot
 ```
 
 Production: reverse proxy с TLS на порту 443. MAX принимает webhook только по HTTPS с сертификатом от доверенного CA ([документация](https://dev.max.ru/docs-api/methods/POST/subscriptions)).
+
+Docker-образ добавляет корневой сертификат Минцифры `Russian Trusted Root CA`,
+необходимый для проверки TLS-сертификата `platform-api2.max.ru`. Если приложение
+запускается без Docker, этот сертификат должен присутствовать в системном
+хранилище доверенных сертификатов.
 
 При старте приложение регистрирует команды бота (`PATCH /me`) и подписку `POST /subscriptions` с типами событий `bot_started`, `message_created` и `message_callback`.
 
